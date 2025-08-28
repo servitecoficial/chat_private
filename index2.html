@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CamNext — Chat aleatorio P2P (PeerJS)</title>
+  <title>CamNext — Chat aleatorio P2P (PubNub signaling)</title>
   <!-- Bootstrap CSS CDN -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
@@ -17,13 +17,12 @@
     .message.me{text-align:right}
     .file-item{font-size:.9rem}
     .small-muted{font-size:.85rem;color:#6c757d}
-    .top-ids{font-size:.9rem}
   </style>
 </head>
 <body>
   <div class="container app">
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <h2 class="mb-0">CamNext <small class="small-muted">— Conexiones P2P (PeerJS)</small></h2>
+      <h2 class="mb-0">CamNext <small class="small-muted">— Conexiones P2P rápidas (demo)</small></h2>
       <div>
         <span id="uidBadge" class="badge bg-secondary user-badge">Generando...</span>
       </div>
@@ -54,17 +53,16 @@
         </div>
 
         <div class="card p-3 mb-3">
-          <div class="d-flex gap-2 align-items-center mb-2">
+          <div class="d-flex gap-2 align-items-center">
             <input id="nameInput" class="form-control form-control-sm" placeholder="Tu nombre (opcional)" />
             <button id="saveName" class="btn btn-sm btn-primary">Guardar</button>
-            <button id="findBtn" class="btn btn-sm btn-success">Buscar aleatorio</button>
-            <button id="copyLinkBtn" class="btn btn-sm btn-outline-secondary">Copiar mi link</button>
+            <button id="findBtn" class="btn btn-sm btn-success">Conectar</button>
+            <div class="form-check form-switch ms-2">
+              <input class="form-check-input" type="checkbox" id="videoOnlySwitch">
+              <label class="form-check-label small-muted" for="videoOnlySwitch">Solo video</label>
+            </div>
           </div>
-          <div class="d-flex gap-2 align-items-center mt-2">
-            <input id="otherIdInput" class="form-control form-control-sm" placeholder="Conectar con ID..." />
-            <button id="connectToId" class="btn btn-sm btn-primary">Conectar</button>
-          </div>
-          <div class="mt-2 small-muted">Si la búsqueda automática no encuentra a nadie, copialo y pegalo en otro dispositivo o comparte tu link.</div>
+          <div class="mt-2 small-muted">Si no querés ser encontrado por tu nombre, dejalo vacío. El sistema asigna un identificador único automáticamente.</div>
         </div>
       </div>
 
@@ -86,47 +84,58 @@
             <button id="sendFileBtn" class="btn btn-sm btn-outline-primary">Enviar archivo</button>
           </div>
 
-          <div class="mt-2 small-muted">Los archivos se transfieren P2P cuando sea posible. Si falla, intentá reconectar o usar el link directo.</div>
+          <div class="mt-2 small-muted">Los archivos se transfieren P2P cuando es posible. Si no funciona, se ofrecerá una descarga alternativa.</div>
         </div>
 
         <div class="card p-3">
-          <strong>Mi estado / IDs</strong>
-          <div class="top-ids mt-2">
-            <div>Mi ID: <code id="myId">-</code></div>
-            <div>Mi link: <code id="myLink">-</code></div>
-            <div class="mt-1 small-muted">Abrí el link en otro dispositivo para conectar automáticamente.</div>
-          </div>
+          <strong>Estrategia & Moderación</strong>
+          <ul class="small-muted mt-2">
+            <li>Usuarios sin cuenta — ID único guardado en <code>localStorage</code>.</li>
+            <li>Botón "Siguiente" cierra la conexión y busca nuevo match (por presencia en PubNub).</li>
+            <li>Pensá en integrar un servicio de moderación de contenido y reglas de uso antes de producción.</li>
+          </ul>
         </div>
       </div>
     </div>
 
-    <footer class="text-center small-muted mt-4">CamNext — Demo usando <strong>PeerJS public server</strong>. Para producción agregá TURN y seguridad.</footer>
+    <footer class="text-center small-muted mt-4">CamNext — Demo usando <strong>PubNub</strong> como señalización (clave demo incluida para que funcione sin pasos extra).</footer>
   </div>
 
-  <!-- PeerJS -->
-  <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+  <!-- PubNub SDK (usamos demo keys para que no necesites registrar nada) -->
+  <script src="https://cdn.pubnub.com/sdk/javascript/pubnub.4.35.0.min.js"></script>
   <script>
   // =========================
-  // Config y utilidades
+  // Config: PubNub demo keys (solo para demo/prototipo)
+  // En producción reemplazá por tus propias claves y reglas de seguridad.
+  // Fuente: PubNub docs — demo keys disponibles para ejemplos. 
+  // =========================
+  const pubnub = new PubNub({
+    publishKey: 'demo',
+    subscribeKey: 'demo',
+    uuid: null // lo seteo luego con nuestro uid
+  });
+
+  // =========================
+  // Utilidades: UUID y manejo de nombre
   // =========================
   function uid(len=8){
     const s = crypto.getRandomValues(new Uint8Array(len)).reduce((acc,v)=>acc+v.toString(16).padStart(2,'0'),'');
     return s.slice(0,16);
   }
+
   const localKey = 'camnext:user';
   let localUser = JSON.parse(localStorage.getItem(localKey) || 'null');
-  if(!localUser){ localUser = { id: uid(), name: 'User-'+Math.floor(Math.random()*9000+1000) }; localStorage.setItem(localKey, JSON.stringify(localUser)); }
+  if(!localUser){
+    localUser = { id: uid(), name: 'User-'+Math.floor(Math.random()*9000+1000) };
+    localStorage.setItem(localKey, JSON.stringify(localUser));
+  }
+  pubnub.setUUID(localUser.id);
 
   // UI refs
   const uidBadge = document.getElementById('uidBadge');
   const nameInput = document.getElementById('nameInput');
   const saveName = document.getElementById('saveName');
   const findBtn = document.getElementById('findBtn');
-  const copyLinkBtn = document.getElementById('copyLinkBtn');
-  const otherIdInput = document.getElementById('otherIdInput');
-  const connectToId = document.getElementById('connectToId');
-  const myIdEl = document.getElementById('myId');
-  const myLinkEl = document.getElementById('myLink');
   const passBtn = document.getElementById('passBtn');
   const stopBtn = document.getElementById('stopBtn');
   const roomLabel = document.getElementById('roomLabel');
@@ -144,153 +153,235 @@
   uidBadge.textContent = `${localUser.name} — ${localUser.id.slice(0,8)}`;
   nameInput.value = localUser.name;
 
-  saveName.addEventListener('click', ()=>{ localUser.name = nameInput.value.trim() || localUser.name; localStorage.setItem(localKey, JSON.stringify(localUser)); uidBadge.textContent = `${localUser.name} — ${localUser.id.slice(0,8)}`; });
-
-  // Si la URL tiene ?peer=<id> conectar automáticamente al abrir
-  const urlParams = new URLSearchParams(window.location.search);
-  const autoConnectId = urlParams.get('peer');
+  saveName.addEventListener('click', ()=>{
+    localUser.name = nameInput.value.trim() || localUser.name;
+    localStorage.setItem(localKey, JSON.stringify(localUser));
+    uidBadge.textContent = `${localUser.name} — ${localUser.id.slice(0,8)}`;
+  });
 
   // =========================
-  // Media
+  // WebRTC local media
   // =========================
   let localStream = null;
   async function startLocalMedia(){
-    try{ localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true}); localVideo.srcObject = localStream; }catch(e){ console.warn('Media error',e); appendSystem('No se pudo acceder a cámara/mic.'); }
+    try{
+      localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+      localVideo.srcObject = localStream;
+    }catch(e){
+      console.warn('No se pudo acceder a cámara/ mic:', e);
+      appendSystem('No se pudo acceder a cámara/mic. Verificá permisos.');
+    }
   }
   startLocalMedia();
 
-  toggleCam.addEventListener('click', ()=>{ if(!localStream) return; const t = localStream.getVideoTracks()[0]; if(t) t.enabled = !t.enabled; toggleCam.textContent = t && t.enabled ? 'Cam ON' : 'Cam OFF'; });
-  toggleMic.addEventListener('click', ()=>{ if(!localStream) return; const t = localStream.getAudioTracks()[0]; if(t) t.enabled = !t.enabled; toggleMic.textContent = t && t.enabled ? 'Mic ON' : 'Mic OFF'; });
+  toggleCam.addEventListener('click', ()=>{
+    if(!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if(track) track.enabled = !track.enabled;
+    toggleCam.textContent = track && track.enabled ? 'Cam ON' : 'Cam OFF';
+  });
+  toggleMic.addEventListener('click', ()=>{
+    if(!localStream) return;
+    const track = localStream.getAudioTracks()[0];
+    if(track) track.enabled = !track.enabled;
+    toggleMic.textContent = track && track.enabled ? 'Mic ON' : 'Mic OFF';
+  });
 
-  shareScreen.addEventListener('click', async ()=>{ try{ const s = await navigator.mediaDevices.getDisplayMedia({video:true}); const track = s.getVideoTracks()[0]; if(window.currentCall && window.currentCall.peerConnection){ const sender = window.currentCall.peerConnection.getSenders().find(s=>s.track && s.track.kind==='video'); if(sender) sender.replaceTrack(track); } localVideo.srcObject = s; track.onended = ()=>{ if(localStream) localVideo.srcObject = localStream; }; }catch(e){console.warn('Screen share cancelled',e);} });
+  shareScreen.addEventListener('click', async ()=>{
+    try{
+      const s = await navigator.mediaDevices.getDisplayMedia({video:true});
+      const track = s.getVideoTracks()[0];
+      if(window.pc){
+        const sender = pc.getSenders().find(s=>s.track && s.track.kind==='video');
+        if(sender) sender.replaceTrack(track);
+      }
+      localVideo.srcObject = s;
+      track.onended = ()=>{ if(localStream) localVideo.srcObject = localStream; }
+    }catch(e){console.warn('Pantalla compartida cancelada',e)}
+  });
 
   // =========================
-  // PeerJS setup (usa servidor público de PeerJS)
+  // Signaling & Matchmaking via PubNub
+  // - Usamos un canal de lobby para presencia y aquí-now
+  // - Cuando encontramos un peer, creamos un canal privado roomId para señalización
   // =========================
-  // Nota: PeerJS public server (0.peerjs.com) se utiliza aquí para señalización.
-  // Para mejorar la confiabilidad en producción añadí TURN servers en iceServers.
-  const peer = new Peer(localUser.id, {
-    host: '0.peerjs.com',
-    port: 443,
-    secure: true,
-    config: {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-        // Agregá TURN si tenés credenciales:
-        // { urls: 'turn:mi-turn-server:3478', username: 'user', credential: 'pass' }
-      ]
+  const LOBBY_CHANNEL = 'camnext-lobby';
+  const SIGNAL_PREFIX = 'camnext-room-';
+
+  // PubNub listener
+  pubnub.addListener({
+    message: function(evt){
+      const msg = evt.message;
+      if(!msg) return;
+      // mensajes de signaling en canales de room manejados más abajo
+      if(msg.type === 'available') return; // lobby availability
+    },
+    presence: function(evt){
+      // presencia en lobby (join/leave)
     }
   });
 
-  let conn = null; // DataConnection
-  let currentCall = null;
+  // función para buscar peers en el lobby usando hereNow
+  async function findMatch(){
+    appendSystem('Buscando match en lobby...');
+    try{
+      // publicar que estoy disponible
+      await pubnub.publish({channel:LOBBY_CHANNEL, message:{type:'available', id: localUser.id, name: localUser.name, ts: Date.now()}});
+      // pedir lista de ocupantes del canal para intentar emparejar
+      pubnub.hereNow({channels:[LOBBY_CHANNEL], includeUUIDs:true, includeState:false}, function(status, response){
+        const occupants = (response && response.totalOccupancy) ? response.channels[LOBBY_CHANNEL].occupants : [];
+        // filtrar nosotros
+        const candidates = occupants.filter(o=>o.uuid && o.uuid !== localUser.id);
+        if(candidates.length === 0){ appendSystem('No hay usuarios en el lobby ahora. Esperá a que otro abra la página o compartí tu ID.'); findBtn.disabled=false; findBtn.textContent='Conectar'; return; }
+        // seleccionar uno aleatorio
+        const other = candidates[Math.floor(Math.random()*candidates.length)];
+        const otherId = other.uuid;
+        appendSystem('Match encontrado: '+otherId);
+        // crear roomId determinista para ambos (orden alfabético)
+        const roomId = [localUser.id, otherId].sort().join('-');
+        startSignaling(roomId, otherId);
+      });
+    }catch(e){ console.warn(e); appendSystem('Error en matchmaking: '+e); }
+  }
+
+  findBtn.addEventListener('click', ()=>{ findBtn.disabled=true; findBtn.textContent='Buscando...'; findMatch(); });
+
+  // =========================
+  // WebRTC: crear RTCPeerConnection y usar PubNub para señalizar
+  // =========================
+  const configuration = { iceServers: [ { urls: 'stun:stun.l.google.com:19302' } ] };
+  let pc = null;
+  let dc = null; // data channel
+  let currentRoom = null;
   let incomingFile = null;
 
-  peer.on('open', id=>{
-    myIdEl.textContent = id;
-    const link = `${location.origin}${location.pathname}?peer=${encodeURIComponent(id)}`;
-    myLinkEl.textContent = link;
-    uidBadge.textContent = `${localUser.name} — ${id.slice(0,8)}`;
-    appendSystem('Conectado a PeerJS: ' + id);
-    // si vinimos con ?peer= otro, conectar automático
-    if(autoConnectId && autoConnectId !== id){ otherIdInput.value = autoConnectId; setTimeout(()=>connectById(autoConnectId), 800); }
-  });
-  peer.on('error', err=>{ console.warn('Peer error',err); appendSystem('Error Peer: '+err); });
+  function startSignaling(roomId, otherId){
+    currentRoom = roomId;
+    roomLabel.textContent = roomId;
+    appendSystem('Iniciando conexión con '+otherId+' en '+roomId);
 
-  // recibir conexiones de datos
-  peer.on('connection', c=>{
-    if(conn){ // ya conectado: rechazar
-      c.on('open', ()=>{ c.send({type:'busy'}); c.close(); });
-      return;
-    }
-    conn = c; setupDataConn();
-  });
+    // suscribirse al canal de señalización
+    const signalChannel = SIGNAL_PREFIX + roomId;
+    pubnub.subscribe({channels:[signalChannel]});
 
-  // recibir llamadas media
-  peer.on('call', call=>{
-    if(currentCall){ try{ call.close(); }catch(e){} return; }
-    currentCall = call;
-    if(localStream) call.answer(localStream);
-    call.on('stream', s=>{ remoteVideo.srcObject = s; });
-    call.on('close', ()=>{ remoteVideo.srcObject = null; currentCall = null; appendSystem('Llamada finalizada'); });
-  });
-
-  function setupDataConn(){
-    conn.on('open', ()=>{ appendSystem('Canal de datos abierto'); });
-    conn.on('data', msg=>{
-      try{
-        if(msg.type === 'chat') appendChat(msg.text, msg.name || 'Anon');
-        else if(msg.type==='file-meta'){ incomingFile = {meta: msg.meta, chunks: [], received:0}; appendSystem('Recibiendo archivo: '+msg.meta.name); }
-        else if(msg.type==='file-chunk'){ if(incomingFile) incomingFile.chunks.push(new Uint8Array(msg.chunk)); }
-        else if(msg.type==='file-end'){ const blob = new Blob(incomingFile.chunks); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = incomingFile.meta.name; a.textContent = `Descargar ${incomingFile.meta.name}`; a.className='d-block file-item'; chatBox.appendChild(a); chatBox.scrollTop = chatBox.scrollHeight; incomingFile = null; }
-        else if(msg.type==='busy') appendSystem('El otro usuario está ocupado');
-      }catch(e){ console.warn(e); }
-    });
-    conn.on('close', ()=>{ appendSystem('Conexión de datos cerrada'); conn = null; });
-  }
-
-  // conectar por ID (manual)
-  connectToId.addEventListener('click', ()=>{ const id = otherIdInput.value.trim(); if(!id) return alert('Ingresá una ID'); connectById(id); });
-
-  async function connectById(id){
-    try{
-      appendSystem('Conectando con ' + id + '...');
-      conn = peer.connect(id, { reliable: true });
-      conn.on('open', ()=>{ setupDataConn(); conn.send({type:'intro', name: localUser.name}); });
-      conn.on('error', e=>{ console.warn(e); appendSystem('Error en conexión de datos'); });
-      // llamada
-      if(localStream){ currentCall = peer.call(id, localStream); currentCall.on('stream', s=>{ remoteVideo.srcObject = s; }); currentCall.on('close', ()=>{ remoteVideo.srcObject = null; currentCall = null; appendSystem('Llamada finalizada'); }); }
-      roomLabel.textContent = 'Conectado a ' + id;
-    }catch(e){ console.warn(e); appendSystem('No se pudo conectar: '+e); }
-  }
-
-  // Buscar aleatorio: intentamos listAllPeers (si el servidor lo soporta)
-  findBtn.addEventListener('click', async ()=>{
-    appendSystem('Buscando match...');
-    try{
-      if(typeof peer.listAllPeers !== 'function'){
-        appendSystem('Discovery no soportado por este PeerServer. Usá "Copiar mi link" para conectar manualmente.'); findBtn.disabled=false; return;
+    pubnub.addListener({
+      message: function(evt){
+        if(evt.channel !== signalChannel) return;
+        const m = evt.message;
+        if(!m || m.from === localUser.id) return;
+        if(m.type === 'offer') handleRemoteOffer(m.sdp, m.from);
+        else if(m.type === 'answer') handleRemoteAnswer(m.sdp);
+        else if(m.type === 'candidate') handleRemoteCandidate(m.cand);
       }
-      peer.listAllPeers(peers=>{
-        const candidates = (peers||[]).filter(p=>p && p !== peer.id);
-        if(candidates.length === 0){ appendSystem('No hay peers disponibles. Abrí la URL en otro dispositivo o compartí tu link.'); findBtn.disabled=false; return; }
-        const other = candidates[Math.floor(Math.random()*candidates.length)];
-        appendSystem('Intentando conectar con '+other);
-        connectById(other);
-      });
-    }catch(e){ console.warn(e); appendSystem('Error buscando peers: '+e); }
-  });
+    });
 
-  // copiar link
-  copyLinkBtn.addEventListener('click', ()=>{
-    const link = myLinkEl.textContent;
-    navigator.clipboard.writeText(link).then(()=> appendSystem('Link copiado al portapapeles: ' + link)).catch(e=>{ appendSystem('No se pudo copiar link'); });
-  });
+    // crear peer connection
+    pc = new RTCPeerConnection(configuration);
+    pc.onicecandidate = e=>{ if(e.candidate) pubnub.publish({channel:signalChannel, message:{type:'candidate', cand: e.candidate, from: localUser.id}}); };
+    pc.ontrack = e=>{ remoteVideo.srcObject = e.streams[0]; };
+    pc.onconnectionstatechange = ()=>{ if(pc && (pc.connectionState==='disconnected' || pc.connectionState==='failed' || pc.connectionState==='closed')){ appendSystem('Estado de conexión: '+pc.connectionState); } };
+
+    // agregar local tracks
+    if(localStream) localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
+
+    // crear datachannel
+    dc = pc.createDataChannel('camnext-chat');
+    setupDataChannel(dc);
+    pc.ondatachannel = e=>{ dc = e.channel; setupDataChannel(dc); };
+
+    // si mi id es menor lexicográficamente -> hago offer (determinismo)
+    const amIStarter = localUser.id < otherId;
+    (async ()=>{
+      if(amIStarter){
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await pubnub.publish({channel:signalChannel, message:{type:'offer', sdp: offer, from: localUser.id}});
+      }
+    })();
+  }
+
+  async function handleRemoteOffer(sdp, from){
+    try{
+      if(!pc) startSignaling(currentRoom, from);
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      const signalChannel = SIGNAL_PREFIX + currentRoom;
+      await pubnub.publish({channel:signalChannel, message:{type:'answer', sdp: answer, from: localUser.id}});
+    }catch(e){ console.warn(e); }
+  }
+  async function handleRemoteAnswer(sdp){
+    try{ await pc.setRemoteDescription(new RTCSessionDescription(sdp)); }catch(e){ console.warn(e); }
+  }
+  async function handleRemoteCandidate(cand){
+    try{ await pc.addIceCandidate(new RTCIceCandidate(cand)); }catch(e){ console.warn(e); }
+  }
+
+  function setupDataChannel(channel){
+    channel.binaryType = 'arraybuffer';
+    channel.onopen = ()=>{ appendSystem('Canal de datos abierto'); };
+    channel.onmessage = e=>{
+      try{
+        if(typeof e.data === 'string'){
+          const json = JSON.parse(e.data);
+          if(json.type==='chat') appendChat(json.text, json.name || 'Anon');
+          else if(json.type==='file-meta'){ incomingFile = {meta: json.meta, chunks: [], received:0}; appendSystem('Recibiendo archivo: '+json.meta.name); }
+          else if(json.type==='file-end'){ const blob = new Blob(incomingFile.chunks); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download = incomingFile.meta.name; a.textContent = `Descargar ${incomingFile.meta.name}`; a.className='d-block file-item'; chatBox.appendChild(a); chatBox.scrollTop = chatBox.scrollHeight; incomingFile = null; }
+        }else{
+          if(incomingFile){ incomingFile.chunks.push(e.data); incomingFile.received += e.data.byteLength; }
+        }
+      }catch(err){ console.warn(err); }
+    };
+    channel.onclose = ()=>{ appendSystem('Canal de datos cerrado'); };
+  }
 
   // chat send
-  sendBtn.addEventListener('click', ()=>{ if(chatInput.value.trim()) sendChat(chatInput.value.trim()); });
+  function sendChatMessage(text){
+    const payload = {type:'chat', text, name: localUser.name};
+    if(dc && dc.readyState==='open'){ dc.send(JSON.stringify(payload)); appendChat(text, 'Yo'); }
+    else appendSystem('No estás conectado por P2P aún');
+  }
+  sendBtn.addEventListener('click', ()=>{ if(chatInput.value.trim()){ sendChatMessage(chatInput.value.trim()); chatInput.value=''; }});
   chatInput.addEventListener('keydown', e=>{ if(e.key==='Enter') sendBtn.click(); });
 
-  function sendChat(text){ const payload = {type:'chat', text, name: localUser.name}; if(conn && conn.open){ conn.send(payload); appendChat(text, 'Yo'); } else appendSystem('No estás conectado. Usá el link o conectá por ID.'); }
-
-  // file send via data connection (chunked)
+  // file send
   sendFileBtn.addEventListener('click', async ()=>{
     const file = fileInput.files[0]; if(!file) return alert('Elegí un archivo');
-    if(conn && conn.open){ conn.send({type:'file-meta', meta:{name:file.name,size:file.size,type:file.type}}); const chunkSize = 32*1024; let offset=0; while(offset < file.size){ const slice = file.slice(offset, offset+chunkSize); const buf = await slice.arrayBuffer(); conn.send({type:'file-chunk', chunk: buf}); offset += buf.byteLength; } conn.send({type:'file-end'}); appendSystem('Archivo enviado: '+file.name); }else alert('Conexión de datos no disponible');
+    if(dc && dc.readyState==='open'){
+      dc.send(JSON.stringify({type:'file-meta', meta:{name:file.name,size:file.size,type:file.type}}));
+      const chunkSize = 32*1024; let offset=0;
+      const reader = new FileReader();
+      reader.onload = e=>{ dc.send(e.target.result); offset += e.target.result.byteLength; if(offset < file.size) readSlice(offset); else dc.send(JSON.stringify({type:'file-end'})); };
+      function readSlice(o){ const slice = file.slice(o, o+chunkSize); reader.readAsArrayBuffer(slice); }
+      readSlice(0);
+      appendSystem('Enviando archivo: '+file.name);
+    }else alert('Conexión P2P no disponible');
   });
 
   // pass / stop
-  passBtn.addEventListener('click', ()=>{ if(conn) try{ conn.close(); }catch(e){} if(currentCall) try{ currentCall.close(); }catch(e){} cleanupUI(); });
-  stopBtn.addEventListener('click', ()=>{ if(conn) try{ conn.close(); }catch(e){} if(currentCall) try{ currentCall.close(); }catch(e){} cleanupUI(); });
+  passBtn.addEventListener('click', ()=>{ cleanupAndRetry(); });
+  stopBtn.addEventListener('click', ()=>{ cleanup(); });
 
-  function cleanupUI(){ conn=null; currentCall=null; roomLabel.textContent='No conectado'; chatBox.innerHTML=''; }
+  function cleanupAndRetry(){ cleanup(); findBtn.disabled=false; findBtn.textContent='Conectar'; findMatch(); }
+  function cleanup(){
+    if(dc) try{ dc.close(); }catch(e){}
+    if(pc) try{ pc.close(); }catch(e){}
+    dc=null; pc=null; currentRoom=null; roomLabel.textContent='No conectado'; chatBox.innerHTML='';
+    // unsubscribe from room channel
+    try{ pubnub.unsubscribeAll(); pubnub.subscribe({channels:[LOBBY_CHANNEL]}); }catch(e){}
+  }
 
   function appendSystem(text){ const div = document.createElement('div'); div.className='small-muted'; div.textContent=text; chatBox.appendChild(div); chatBox.scrollTop = chatBox.scrollHeight; }
   function appendChat(text, name='El/La otro'){ const d = document.createElement('div'); d.className='mb-2'; d.innerHTML = `<strong>${name}:</strong> ${escapeHtml(text)}`; chatBox.appendChild(d); chatBox.scrollTop = chatBox.scrollHeight; }
   function escapeHtml(unsafe){ return (unsafe||'').toString().replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#039;" }[c])); }
 
+  // Subscribe to lobby to show presence
+  pubnub.subscribe({channels:[LOBBY_CHANNEL], withPresence:true});
+
   // cleanup on unload
-  window.addEventListener('beforeunload', ()=>{ try{ peer.destroy(); }catch(e){} });
+  window.addEventListener('beforeunload', ()=>{
+    try{ pubnub.publish({channel:LOBBY_CHANNEL, message:{type:'leave', id: localUser.id, ts: Date.now()}}); }catch(e){}
+  });
 
   </script>
 </body>
