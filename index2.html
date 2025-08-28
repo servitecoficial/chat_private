@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CamNext — Chat aleatorio P2P (PubNub signaling)</title>
+  <!-- Bootstrap CSS CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root{--accent:#0d6efd}
+    body{background:#f6f7fb;}
+    .app{max-width:1100px;margin:24px auto}
+    .video-wrap{background:#111;border-radius:12px;padding:8px;}
+    video{width:100%;height:auto;border-radius:8px;background:#000}
+    .user-badge{font-weight:600}
+    .chat-box{height:340px;overflow:auto;background:#fff;padding:12px;border-radius:8px;border:1px solid #e6e6e6}
+    .message.me{text-align:right}
+    .file-item{font-size:.9rem}
+    .small-muted{font-size:.85rem;color:#6c757d}
+  </style>
+</head>
+<body>
+  <div class="container app">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="mb-0">CamNext <small class="small-muted">— Conexiones P2P rápidas (demo)</small></h2>
+      <div>
+        <span id="uidBadge" class="badge bg-secondary user-badge">Generando...</span>
+      </div>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-md-7">
+        <div class="video-wrap mb-3">
+          <div class="row g-2">
+            <div class="col-6">
+              <label class="small-muted">Tu cámara</label>
+              <video id="localVideo" autoplay muted playsinline></video>
+              <div class="d-flex gap-2 mt-2">
+                <button id="toggleCam" class="btn btn-sm btn-outline-primary">Cam</button>
+                <button id="toggleMic" class="btn btn-sm btn-outline-primary">Mic</button>
+                <button id="shareScreen" class="btn btn-sm btn-outline-secondary">Compartir pantalla</button>
+              </div>
+            </div>
+            <div class="col-6">
+              <label class="small-muted">Conectado a</label>
+              <video id="remoteVideo" autoplay playsinline></video>
+              <div class="d-flex gap-2 mt-2">
+                <button id="passBtn" class="btn btn-sm btn-danger">Siguiente</button>
+                <button id="stopBtn" class="btn btn-sm btn-outline-danger">Desconectar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card p-3 mb-3">
+          <div class="d-flex gap-2 align-items-center">
+            <input id="nameInput" class="form-control form-control-sm" placeholder="Tu nombre (opcional)" />
+            <button id="saveName" class="btn btn-sm btn-primary">Guardar</button>
+            <button id="findBtn" class="btn btn-sm btn-success">Conectar</button>
+            <div class="form-check form-switch ms-2">
+              <input class="form-check-input" type="checkbox" id="videoOnlySwitch">
+              <label class="form-check-label small-muted" for="videoOnlySwitch">Solo video</label>
+            </div>
+          </div>
+          <div class="mt-2 small-muted">Si no querés ser encontrado por tu nombre, dejalo vacío. El sistema asigna un identificador único automáticamente.</div>
+        </div>
+      </div>
+
+      <div class="col-md-5">
+        <div class="card p-3 mb-3">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <strong>Chat & Archivos</strong>
+            <small class="small-muted" id="roomLabel">No conectado</small>
+          </div>
+          <div id="chatBox" class="chat-box mb-2"></div>
+
+          <div class="d-flex gap-2">
+            <input id="chatInput" class="form-control form-control-sm" placeholder="Escribí algo..." />
+            <button id="sendBtn" class="btn btn-sm btn-primary">Enviar</button>
+          </div>
+
+          <div class="d-flex gap-2 mt-2">
+            <input type="file" id="fileInput" class="form-control form-control-sm" />
+            <button id="sendFileBtn" class="btn btn-sm btn-outline-primary">Enviar archivo</button>
+          </div>
+
+          <div class="mt-2 small-muted">Los archivos se transfieren P2P cuando es posible. Si no funciona, se ofrecerá una descarga alternativa.</div>
+        </div>
+
+        <div class="card p-3">
+          <strong>Estrategia & Moderación</strong>
+          <ul class="small-muted mt-2">
+            <li>Usuarios sin cuenta — ID único guardado en <code>localStorage</code>.</li>
+            <li>Botón "Siguiente" cierra la conexión y busca nuevo match (por presencia en PubNub).</li>
+            <li>Pensá en integrar un servicio de moderación de contenido y reglas de uso antes de producción.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <footer class="text-center small-muted mt-4">CamNext — Demo usando <strong>PubNub</strong> como señalización (clave demo incluida para que funcione sin pasos extra).</footer>
+  </div>
+
+  <!-- PubNub SDK (usamos demo keys para que no necesites registrar nada) -->
+  <script src="https://cdn.pubnub.com/sdk/javascript/pubnub.4.35.0.min.js"></script>
+  <script>
+  // =========================
+  // Config: PubNub demo keys (solo para demo/prototipo)
+  // En producción reemplazá por tus propias claves y reglas de seguridad.
+  // Fuente: PubNub docs — demo keys disponibles para ejemplos. 
+  // =========================
+  const pubnub = new PubNub({
+    publishKey: 'demo',
+    subscribeKey: 'demo',
+    uuid: null // lo seteo luego con nuestro uid
+  });
+
+  // =========================
+  // Utilidades: UUID y manejo de nombre
+  // =========================
+  function uid(len=8){
+    const s = crypto.getRandomValues(new Uint8Array(len)).reduce((acc,v)=>acc+v.toString(16).padStart(2,'0'),'');
+    return s.slice(0,16);
+  }
+
+  const localKey = 'camnext:user';
+  let localUser = JSON.parse(localStorage.getItem(localKey) || 'null');
+  if(!localUser){
+    localUser = { id: uid(), name: 'User-'+Math.floor(Math.random()*9000+1000) };
+    localStorage.setItem(localKey, JSON.stringify(localUser));
+  }
+  pubnub.setUUID(localUser.id);
+
+  // UI refs
+  const uidBadge = document.getElementById('uidBadge');
+  const nameInput = document.getElementById('nameInput');
+  const saveName = document.getElementById('saveName');
+  const findBtn = document.getElementById('findBtn');
+  const passBtn = document.getElementById('passBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const roomLabel = document.getElementById('roomLabel');
+  const chatBox = document.getElementById('chatBox');
+  const chatInput = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('sendBtn');
+  const localVideo = document.getElementById('localVideo');
+  const remoteVideo = document.getElementById('remoteVideo');
+  const toggleCam = document.getElementById('toggleCam');
+  const toggleMic = document.getElementById('toggleMic');
+  const shareScreen = document.getElementById('shareScreen');
+  const sendFileBtn = document.getElementById('sendFileBtn');
+  const fileInput = document.getElementById('fileInput');
+
+  uidBadge.textContent = `${localUser.name} — ${localUser.id.slice(0,8)}`;
+  nameInput.value = localUser.name;
+
+  saveName.addEventListener('click', ()=>{
+    localUser.name = nameInput.value.trim() || localUser.name;
+    localStorage.setItem(localKey, JSON.stringify(localUser));
+    uidBadge.textContent = `${localUser.name} — ${localUser.id.slice(0,8)}`;
+  });
+
+  // =========================
+  // WebRTC local media
+  // =========================
+  let localStream = null;
+  async function startLocalMedia(){
+    try{
+      localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+      localVideo.srcObject = localStream;
+    }catch(e){
+      console.warn('No se pudo acceder a cámara/ mic:', e);
+      appendSystem('No se pudo acceder a cámara/mic. Verificá permisos.');
+    }
+  }
+  startLocalMedia();
+
+  toggleCam.addEventListener('click', ()=>{
+    if(!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if(track) track.enabled = !track.enabled;
+    toggleCam.textContent = track && track.enabled ? 'Cam ON' : 'Cam OFF';
+  });
+  toggleMic.addEventListener('click', ()=>{
+    if(!localStream) return;
+    const track = localStream.getAudioTracks()[0];
+    if(track) track.enabled = !track.enabled;
+    toggleMic.textContent = track && track.enabled ? 'Mic ON' : 'Mic OFF';
+  });
+
+  shareScreen.addEventListener('click', async ()=>{
+    try{
+      const s = await navigator.mediaDevices.getDisplayMedia({video:true});
+      const track = s.getVideoTracks()[0];
+      if(window.pc){
+        const sender = pc.getSenders().find(s=>s.track && s.track.kind==='video');
+        if(sender) sender.replaceTrack(track);
+      }
+      localVideo.srcObject = s;
+      track.onended = ()=>{ if(localStream) localVideo.srcObject = localStream; }
+    }catch(e){console.warn('Pantalla compartida cancelada',e)}
+  });
+
+  // =========================
+  // Signaling & Matchmaking via PubNub
+  // - Usamos un canal de lobby para presencia y aquí-now
+  // - Cuando encontramos un peer, creamos un canal privado roomId para señalización
+  // =========================
+  const LOBBY_CHANNEL = 'camnext-lobby';
+  const SIGNAL_PREFIX = 'camnext-room-';
+
+  // PubNub listener
+  pubnub.addListener({
+    message: function(evt){
+      const msg = evt.message;
+      if(!msg) return;
+      // mensajes de signaling en canales de room manejados más abajo
+      if(msg.type === 'available') return; // lobby availability
+    },
+    presence: function(evt){
+      // presencia en lobby (join/leave)
+    }
+  });
+
+  // función para buscar peers en el lobby usando hereNow
+  async function findMatch(){
+    appendSystem('Buscando match en lobby...');
+    try{
+      // publicar que estoy disponible
+      await pubnub.publish({channel:LOBBY_CHANNEL, message:{type:'available', id: localUser.id, name: localUser.name, ts: Date.now()}});
+      // pedir lista de ocupantes del canal para intentar emparejar
+      pubnub.hereNow({channels:[LOBBY_CHANNEL], includeUUIDs:true, includeState:false}, function(status, response){
+        const occupants = (response && response.totalOccupancy) ? response.channels[LOBBY_CHANNEL].occupants : [];
+        // filtrar nosotros
+        const candidates = occupants.filter(o=>o.uuid && o.uuid !== localUser.id);
+        if(candidates.length === 0){ appendSystem('No hay usuarios en el lobby ahora. Esperá a que otro abra la página o compartí tu ID.'); findBtn.disabled=false; findBtn.textContent='Conectar'; return; }
+        // seleccionar uno aleatorio
+        const other = candidates[Math.floor(Math.random()*candidates.length)];
+        const otherId = other.uuid;
+        appendSystem('Match encontrado: '+otherId);
+        // crear roomId determinista para ambos (orden alfabético)
+        const roomId = [localUser.id, otherId].sort().join('-');
+        startSignaling(roomId, otherId);
+      });
+    }catch(e){ console.warn(e); appendSystem('Error en matchmaking: '+e); }
+  }
+
+  findBtn.addEventListener('click', ()=>{ findBtn.disabled=true; findBtn.textContent='Buscando...'; findMatch(); });
+
+  // =========================
+  // WebRTC: crear RTCPeerConnection y usar PubNub para señalizar
+  // =========================
+  const configuration = { iceServers: [ { urls: 'stun:stun.l.google.com:19302' } ] };
+  let pc = null;
+  let dc = null; // data channel
+  let currentRoom = null;
+  let incomingFile = null;
+
+  function startSignaling(roomId, otherId){
+    currentRoom = roomId;
+    roomLabel.textContent = roomId;
+    appendSystem('Iniciando conexión con '+otherId+' en '+roomId);
+
+    // suscribirse al canal de señalización
+    const signalChannel = SIGNAL_PREFIX + roomId;
+    pubnub.subscribe({channels:[signalChannel]});
+
+    pubnub.addListener({
+      message: function(evt){
+        if(evt.channel !== signalChannel) return;
+        const m = evt.message;
+        if(!m || m.from === localUser.id) return;
+        if(m.type === 'offer') handleRemoteOffer(m.sdp, m.from);
+        else if(m.type === 'answer') handleRemoteAnswer(m.sdp);
+        else if(m.type === 'candidate') handleRemoteCandidate(m.cand);
+      }
+    });
+
+    // crear peer connection
+    pc = new RTCPeerConnection(configuration);
+    pc.onicecandidate = e=>{ if(e.candidate) pubnub.publish({channel:signalChannel, message:{type:'candidate', cand: e.candidate, from: localUser.id}}); };
+    pc.ontrack = e=>{ remoteVideo.srcObject = e.streams[0]; };
+    pc.onconnectionstatechange = ()=>{ if(pc && (pc.connectionState==='disconnected' || pc.connectionState==='failed' || pc.connectionState==='closed')){ appendSystem('Estado de conexión: '+pc.connectionState); } };
+
+    // agregar local tracks
+    if(localStream) localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
+
+    // crear datachannel
+    dc = pc.createDataChannel('camnext-chat');
+    setupDataChannel(dc);
+    pc.ondatachannel = e=>{ dc = e.channel; setupDataChannel(dc); };
+
+    // si mi id es menor lexicográficamente -> hago offer (determinismo)
+    const amIStarter = localUser.id < otherId;
+    (async ()=>{
+      if(amIStarter){
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await pubnub.publish({channel:signalChannel, message:{type:'offer', sdp: offer, from: localUser.id}});
+      }
+    })();
+  }
+
+  async function handleRemoteOffer(sdp, from){
+    try{
+      if(!pc) startSignaling(currentRoom, from);
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      const signalChannel = SIGNAL_PREFIX + currentRoom;
+      await pubnub.publish({channel:signalChannel, message:{type:'answer', sdp: answer, from: localUser.id}});
+    }catch(e){ console.warn(e); }
+  }
+  async function handleRemoteAnswer(sdp){
+    try{ await pc.setRemoteDescription(new RTCSessionDescription(sdp)); }catch(e){ console.warn(e); }
+  }
+  async function handleRemoteCandidate(cand){
+    try{ await pc.addIceCandidate(new RTCIceCandidate(cand)); }catch(e){ console.warn(e); }
+  }
+
+  function setupDataChannel(channel){
+    channel.binaryType = 'arraybuffer';
+    channel.onopen = ()=>{ appendSystem('Canal de datos abierto'); };
+    channel.onmessage = e=>{
+      try{
+        if(typeof e.data === 'string'){
+          const json = JSON.parse(e.data);
+          if(json.type==='chat') appendChat(json.text, json.name || 'Anon');
+          else if(json.type==='file-meta'){ incomingFile = {meta: json.meta, chunks: [], received:0}; appendSystem('Recibiendo archivo: '+json.meta.name); }
+          else if(json.type==='file-end'){ const blob = new Blob(incomingFile.chunks); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download = incomingFile.meta.name; a.textContent = `Descargar ${incomingFile.meta.name}`; a.className='d-block file-item'; chatBox.appendChild(a); chatBox.scrollTop = chatBox.scrollHeight; incomingFile = null; }
+        }else{
+          if(incomingFile){ incomingFile.chunks.push(e.data); incomingFile.received += e.data.byteLength; }
+        }
+      }catch(err){ console.warn(err); }
+    };
+    channel.onclose = ()=>{ appendSystem('Canal de datos cerrado'); };
+  }
+
+  // chat send
+  function sendChatMessage(text){
+    const payload = {type:'chat', text, name: localUser.name};
+    if(dc && dc.readyState==='open'){ dc.send(JSON.stringify(payload)); appendChat(text, 'Yo'); }
+    else appendSystem('No estás conectado por P2P aún');
+  }
+  sendBtn.addEventListener('click', ()=>{ if(chatInput.value.trim()){ sendChatMessage(chatInput.value.trim()); chatInput.value=''; }});
+  chatInput.addEventListener('keydown', e=>{ if(e.key==='Enter') sendBtn.click(); });
+
+  // file send
+  sendFileBtn.addEventListener('click', async ()=>{
+    const file = fileInput.files[0]; if(!file) return alert('Elegí un archivo');
+    if(dc && dc.readyState==='open'){
+      dc.send(JSON.stringify({type:'file-meta', meta:{name:file.name,size:file.size,type:file.type}}));
+      const chunkSize = 32*1024; let offset=0;
+      const reader = new FileReader();
+      reader.onload = e=>{ dc.send(e.target.result); offset += e.target.result.byteLength; if(offset < file.size) readSlice(offset); else dc.send(JSON.stringify({type:'file-end'})); };
+      function readSlice(o){ const slice = file.slice(o, o+chunkSize); reader.readAsArrayBuffer(slice); }
+      readSlice(0);
+      appendSystem('Enviando archivo: '+file.name);
+    }else alert('Conexión P2P no disponible');
+  });
+
+  // pass / stop
+  passBtn.addEventListener('click', ()=>{ cleanupAndRetry(); });
+  stopBtn.addEventListener('click', ()=>{ cleanup(); });
+
+  function cleanupAndRetry(){ cleanup(); findBtn.disabled=false; findBtn.textContent='Conectar'; findMatch(); }
+  function cleanup(){
+    if(dc) try{ dc.close(); }catch(e){}
+    if(pc) try{ pc.close(); }catch(e){}
+    dc=null; pc=null; currentRoom=null; roomLabel.textContent='No conectado'; chatBox.innerHTML='';
+    // unsubscribe from room channel
+    try{ pubnub.unsubscribeAll(); pubnub.subscribe({channels:[LOBBY_CHANNEL]}); }catch(e){}
+  }
+
+  function appendSystem(text){ const div = document.createElement('div'); div.className='small-muted'; div.textContent=text; chatBox.appendChild(div); chatBox.scrollTop = chatBox.scrollHeight; }
+  function appendChat(text, name='El/La otro'){ const d = document.createElement('div'); d.className='mb-2'; d.innerHTML = `<strong>${name}:</strong> ${escapeHtml(text)}`; chatBox.appendChild(d); chatBox.scrollTop = chatBox.scrollHeight; }
+  function escapeHtml(unsafe){ return (unsafe||'').toString().replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#039;" }[c])); }
+
+  // Subscribe to lobby to show presence
+  pubnub.subscribe({channels:[LOBBY_CHANNEL], withPresence:true});
+
+  // cleanup on unload
+  window.addEventListener('beforeunload', ()=>{
+    try{ pubnub.publish({channel:LOBBY_CHANNEL, message:{type:'leave', id: localUser.id, ts: Date.now()}}); }catch(e){}
+  });
+
+  </script>
+</body>
+</html>
